@@ -1,0 +1,82 @@
+name: Build and Deploy Spring Boot Backend to Azure App Service
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: azure-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '17'
+  AZURE_WEBAPP_NAME: bitting-backend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x mvnw
+
+      - name: Build JAR with Maven
+        run: ./mvnw -DskipTests clean package
+
+      - name: Verify build artifact
+        id: artifact
+        run: |
+          echo "Contents of target directory:"
+          ls -la target
+
+          JAR_FILE=$(find target -maxdepth 1 -type f -name "*.jar" ! -name "*.jar.original" | head -n 1)
+          if [ -z "$JAR_FILE" ]; then
+            echo "No deployable JAR found in target/."
+            exit 1
+          fi
+
+          echo "Deployable JAR: $JAR_FILE"
+          mkdir -p staging
+          cp "$JAR_FILE" staging/app.jar
+
+      - name: Upload deploy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-jar
+          path: staging/app.jar
+          if-no-files-found: error
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: production
+
+    steps:
+      - name: Download deploy artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jar
+          path: release
+
+      - name: Deploy JAR to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: release/app.jar
